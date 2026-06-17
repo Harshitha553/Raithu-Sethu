@@ -74,7 +74,7 @@ async def get_messages(conversation_id: str, current_user: dict = Depends(get_cu
         supabase.table("messages")
         .select("*")
         .eq("conversation_id", conversation_id)
-        .order("created_at", asc=True)
+        .order("created_at")
         .execute()
     )
 
