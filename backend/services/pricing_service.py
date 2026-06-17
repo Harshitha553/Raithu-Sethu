@@ -1,67 +1,101 @@
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from utils.supabase_client import get_supabase
 
 
-def send_notification(
-    user_id: str,
-    title: str,
-    message: str,
-    notif_type: str,
-    reference_id: str = None,
-):
-    """Persist a notification record in Supabase."""
+def get_suggested_price(crop_name: str) -> dict:
+    """
+    Calculate a suggested price based on recent completed bookings.
+    Falls back to average listed price if no booking data.
+    """
     supabase = get_supabase()
-    record = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "title": title,
-        "message": message,
-        "type": notif_type,
-        "reference_id": reference_id,
-        "is_read": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    supabase.table("notifications").insert(record).execute()
-    return record
+    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
 
-
-def notify_crop_request(farmer_id: str, buyer_name: str, crop_name: str, request_id: str):
-    send_notification(
-        user_id=farmer_id,
-        title="New Purchase Request",
-        message=f"{buyer_name} has requested your crop: {crop_name}",
-        notif_type="crop_request",
-        reference_id=request_id,
+    # Fetch recent bookings for this crop type
+    bookings = (
+        supabase.table("bookings")
+        .select("total_price, quantity")
+        .eq("crop_name", crop_name)
+        .gte("created_at", thirty_days_ago)
+        .eq("status", "completed")
+        .execute()
     )
 
+    if bookings.data:
+        prices = [b["total_price"] / b["quantity"] for b in bookings.data if b["quantity"] > 0]
+        avg_price = sum(prices) / len(prices)
+        return {
+            "crop_name": crop_name,
+            "suggested_price": round(avg_price, 2),
+            "basis": "completed_bookings",
+            "data_points": len(prices),
+        }
 
-def notify_request_status(buyer_id: str, status: str, crop_name: str, request_id: str):
-    send_notification(
-        user_id=buyer_id,
-        title=f"Request {status.capitalize()}",
-        message=f"Your request for {crop_name} was {status}.",
-        notif_type="crop_request",
-        reference_id=request_id,
+    # Fall back to active listings
+    listings = (
+        supabase.table("crops")
+        .select("price_per_unit")
+        .ilike("name", f"%{crop_name}%")
+        .eq("status", "active")
+        .execute()
     )
 
+    if listings.data:
+        prices = [l["price_per_unit"] for l in listings.data]
+        avg_price = sum(prices) / len(prices)
+        return {
+            "crop_name": crop_name,
+            "suggested_price": round(avg_price, 2),
+            "basis": "active_listings",
+            "data_points": len(prices),
+        }
 
-def notify_flash_sale(user_ids: list, crop_name: str, discount: float, sale_id: str):
-    for uid in user_ids:
-        send_notification(
-            user_id=uid,
-            title="Flash Sale!",
-            message=f"{crop_name} is now {discount}% off — limited time!",
-            notif_type="flash_sale",
-            reference_id=sale_id,
+    return {"crop_name": crop_name, "suggested_price": None, "basis": "no_data", "data_points": 0}
+
+
+def get_demand_trend(crop_name: str) -> dict:
+    """
+    Analyse request volume per week to determine demand trend.
+    """
+    supabase = get_supabase()
+    now = datetime.now(timezone.utc)
+    weeks = []
+
+    for i in range(4):
+        week_start = (now - timedelta(weeks=i + 1)).isoformat()
+        week_end = (now - timedelta(weeks=i)).isoformat()
+        result = (
+            supabase.table("purchase_requests")
+            .select("id", count="exact")
+            .ilike("crop_name", f"%{crop_name}%")
+            .gte("created_at", week_start)
+            .lt("created_at", week_end)
+            .execute()
         )
+        weeks.append({"week": f"Week -{i + 1}", "requests": result.count or 0})
+
+    weeks.reverse()
+
+    # Simple trend: compare last week vs previous week
+    if len(weeks) >= 2 and weeks[-2]["requests"] > 0:
+        change = ((weeks[-1]["requests"] - weeks[-2]["requests"]) / weeks[-2]["requests"]) * 100
+        trend = "rising" if change > 5 else "falling" if change < -5 else "stable"
+    else:
+        trend = "insufficient_data"
+        change = 0
+
+    return {
+        "crop_name": crop_name,
+        "trend": trend,
+        "change_percent": round(change, 2),
+        "weekly_data": weeks,
+    }
 
 
-def notify_requirement_match(farmer_id: str, requirement_id: str, crop_name: str):
-    send_notification(
-        user_id=farmer_id,
-        title="Matching Requirement Found",
-        message=f"A buyer is looking for {crop_name} that matches your listing.",
-        notif_type="requirement_match",
-        reference_id=requirement_id,
-    )
+def update_all_market_prices():
+    """Called by the scheduler to refresh pricing data."""
+    supabase = get_supabase()
+    crops = supabase.table("crops").select("name").eq("status", "active").execute()
+    unique_names = list({c["name"] for c in (crops.data or [])})
+    for name in unique_names:
+        get_suggested_price(name)  # triggers recalculation / caching if needed
+    return len(unique_names)

@@ -1,67 +1,53 @@
-import uuid
-from datetime import datetime, timezone
-from utils.supabase_client import get_supabase
+import bcrypt
+import jwt
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from config import settings
 
 
-def send_notification(
-    user_id: str,
-    title: str,
-    message: str,
-    notif_type: str,
-    reference_id: str = None,
-):
-    """Persist a notification record in Supabase."""
-    supabase = get_supabase()
-    record = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "title": title,
-        "message": message,
-        "type": notif_type,
-        "reference_id": reference_id,
-        "is_read": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+def create_token(user_id: str, role: str, extra: dict = None) -> str:
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRY_HOURS),
     }
-    supabase.table("notifications").insert(record).execute()
-    return record
+    if extra:
+        payload.update(extra)
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def notify_crop_request(farmer_id: str, buyer_name: str, crop_name: str, request_id: str):
-    send_notification(
-        user_id=farmer_id,
-        title="New Purchase Request",
-        message=f"{buyer_name} has requested your crop: {crop_name}",
-        notif_type="crop_request",
-        reference_id=request_id,
-    )
+def decode_token(token: str) -> Optional[dict]:
+    try:
+        return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
 
 
-def notify_request_status(buyer_id: str, status: str, crop_name: str, request_id: str):
-    send_notification(
-        user_id=buyer_id,
-        title=f"Request {status.capitalize()}",
-        message=f"Your request for {crop_name} was {status}.",
-        notif_type="crop_request",
-        reference_id=request_id,
-    )
+def create_password_reset_token(email: str) -> str:
+    payload = {
+        "email": email,
+        "purpose": "reset",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def notify_flash_sale(user_ids: list, crop_name: str, discount: float, sale_id: str):
-    for uid in user_ids:
-        send_notification(
-            user_id=uid,
-            title="Flash Sale!",
-            message=f"{crop_name} is now {discount}% off — limited time!",
-            notif_type="flash_sale",
-            reference_id=sale_id,
-        )
-
-
-def notify_requirement_match(farmer_id: str, requirement_id: str, crop_name: str):
-    send_notification(
-        user_id=farmer_id,
-        title="Matching Requirement Found",
-        message=f"A buyer is looking for {crop_name} that matches your listing.",
-        notif_type="requirement_match",
-        reference_id=requirement_id,
-    )
+def verify_reset_token(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        if payload.get("purpose") != "reset":
+            return None
+        return payload.get("email")
+    except jwt.InvalidTokenError:
+        return None
