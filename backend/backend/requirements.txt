@@ -1,0 +1,29 @@
+# Core Framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# WebSockets / Socket.IO
+python-socketio==5.11.3
+python-engineio==4.9.1
+
+# Authentication & Security
+PyJWT==2.8.0
+bcrypt==4.1.3
+
+# Supabase
+supabase==2.5.0
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# Background Jobs
+APScheduler==3.10.4
+
+# Validation (Pydantic is bundled with FastAPI)
+pydantic[email]==2.7.1
+
+# HTTP Requests
+requests==2.32.3
+
+# Date utilities
+python-dateutil==2.9.0
